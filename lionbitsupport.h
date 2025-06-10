@@ -4237,21 +4237,19 @@ void DisRotation(int x)
 
 // progressbar style 1
 
-void drawProgressBar(int value, const char *barColorName = "green", const char *labelText = "Progress Bar Test", const char *percentageText = nullptr)
+void drawProgressBar(int value, const char *barColorName = "green", const char *labelText = "Progress Bar Test", const char *percentageText = nullptr, const char *percentageColorName = "white")
 {
-
   if (value < 0)
     value = 0;
   if (value > 100)
     value = 100;
 
   uint16_t barColor = getColorFromName(barColorName);
-
+  uint16_t percentageColor = getColorFromName(percentageColorName);
   const int progressBarWidth = 100;
-  const int progressBarHeight = 10;
+  const int progressBarHeight = 20;
   const int startX = 14;
   const int startY = 60;
-
   tft.fillScreen(ST7735_BLACK);
 
   if (labelText != nullptr)
@@ -4269,14 +4267,130 @@ void drawProgressBar(int value, const char *barColorName = "green", const char *
 
   if (percentageText != nullptr)
   {
+    tft.setTextColor(percentageColor);
+    tft.setTextSize(1);
+    tft.setCursor(startX + progressBarWidth / 2 - 10, startY + progressBarHeight + 10);
+    tft.println(percentageText);
+  }
+  else
+  {
     char percentage[10];
     snprintf(percentage, sizeof(percentage), "%d%%", value);
-    tft.setTextColor(ST7735_WHITE);
+    tft.setTextColor(percentageColor);
     tft.setTextSize(1);
     tft.setCursor(startX + progressBarWidth / 2 - 10, startY + progressBarHeight + 10);
     tft.println(percentage);
   }
 }
+
+
+ 
+ // Global to track last needle
+float lastNeedleAngle = -999.0;
+
+// Call once at start to draw gauge background
+void drawGaugeBackground(int minValue = 0, int maxValue = 100, const char *labelText = "Speed")
+{
+  int cx = 64; // center X
+  int cy = 70; // center Y
+  int radius = 50;
+
+  // Clear screen
+  tft.fillScreen(ST7735_BLACK);
+
+  // Draw label
+  tft.setTextColor(ST7735_WHITE);
+  tft.setTextSize(1);
+  tft.setCursor(cx - 50, cy - 10);
+  tft.println(labelText);
+
+  // Draw colored arc
+  for (int angle = -90; angle <= 90; angle += 2) // Left to right sweep
+  {
+    float rad = angle * DEG_TO_RAD;
+    int x1 = cx + cos(rad) * (radius - 8);
+    int y1 = cy + sin(rad) * (radius - 8);
+    int x2 = cx + cos(rad) * (radius);
+    int y2 = cy + sin(rad) * (radius);
+
+    uint16_t color;
+    if (angle < -30)
+      color = ST7735_GREEN;
+    else if (angle < 30)
+      color = ST7735_YELLOW;
+    else
+      color = ST7735_RED;
+
+    tft.drawLine(x1, y1, x2, y2, color);
+  }
+
+  // Draw tick marks for 0, 25, 50, 100
+  int tickValues[] = {0, 25, 50, 75, 100};
+  int numTicks = 5;
+
+  for (int i = 0; i < numTicks; i++)
+  {
+    int value = tickValues[i];
+    float valueRatio = (float)(value - minValue) / (float)(maxValue - minValue);
+    float angle = -90.0 + valueRatio * 180.0; // Map value to angle
+    float rad = angle * DEG_TO_RAD;
+
+    int xStart = cx + cos(rad) * (radius - 12);
+    int yStart = cy + sin(rad) * (radius - 12);
+    int xEnd   = cx + cos(rad) * radius;
+    int yEnd   = cy + sin(rad) * radius;
+
+    tft.drawLine(xStart, yStart, xEnd, yEnd, ST7735_WHITE);
+
+    // Draw label near tick
+    int xLabel = cx + cos(rad) * (radius - 20);
+    int yLabel = cy + sin(rad) * (radius - 20);
+    tft.setCursor(xLabel - 5, yLabel - 3);
+    tft.print(value);
+  }
+
+  // Draw center circle
+  tft.fillCircle(cx, cy, 4, ST7735_WHITE);
+
+  // Reset last needle angle
+  lastNeedleAngle = -999.0;
+}
+
+// Call this repeatedly to update the needle
+void drawGaugeNeedle(int value, int minValue = 0, int maxValue = 100)
+{
+  int cx = 64;
+  int cy = 70;
+  int radius = 50;
+
+  // Erase last needle (draw it in black)
+  if (lastNeedleAngle != -999.0)
+  {
+    float lastRad = lastNeedleAngle * DEG_TO_RAD;
+    int lx = cx + cos(lastRad) * (radius - 15);
+    int ly = cy + sin(lastRad) * (radius - 15);
+    tft.drawLine(cx, cy, lx, ly, ST7735_BLACK);
+  }
+
+  // Compute new needle angle
+  float angleRange = 180.0;    // sweep left to right
+  float angleOffset = -90.0;   // start from left
+
+  float valueRatio = (float)(value - minValue) / (float)(maxValue - minValue);
+  float angle = angleOffset + valueRatio * angleRange;
+
+  float rad = angle * DEG_TO_RAD;
+  int xNeedle = cx + cos(rad) * (radius - 15);
+  int yNeedle = cy + sin(rad) * (radius - 15);
+
+  // Draw new needle
+  tft.drawLine(cx, cy, xNeedle, yNeedle, ST7735_WHITE);
+
+  // Save last needle angle
+  lastNeedleAngle = angle;
+}
+
+ 
 
 
 // Led Functions 
@@ -4307,5 +4421,90 @@ void pattern1_AlternatingColors(int redPin, int greenPin, int bluePin) {
     delay(500);
 }
 
+// --- LionGraph internal variables and Function ---
 
-#endif
+#define GRAPH_X      10   // graph position X
+#define GRAPH_Y      20   // graph position Y
+#define GRAPH_W      140  // graph width
+#define GRAPH_H      80   // graph height
+
+#define MAX_GRAPH_POINTS GRAPH_W
+
+float lionGraphValues[MAX_GRAPH_POINTS]; // stores graph history
+bool lionGraphInitialized = false;
+float lionGraphMaxObserved = -9999;
+float lionGraphMinObserved =  9999;
+
+// Now function receives maxValue, minValue
+void  LionGraph(float value, float maxValue, float minValue)
+{
+  // First time → initialize graph
+  if (!lionGraphInitialized)
+  {
+    lionGraphInitialized = true;
+
+    for (int i = 0; i < MAX_GRAPH_POINTS; i++)
+      lionGraphValues[i] = 0;
+
+    lionGraphMaxObserved = value;
+    lionGraphMinObserved = value;
+
+    // Draw graph frame
+    tft.fillRect(GRAPH_X - 1, GRAPH_Y - 1, GRAPH_W + 2, GRAPH_H + 2, ST7735_BLACK);
+    tft.drawRect(GRAPH_X - 1, GRAPH_Y - 1, GRAPH_W + 2, GRAPH_H + 2, ST7735_WHITE);
+  }
+
+  // Update Max/Min Observed (for info display)
+  if (value > lionGraphMaxObserved) lionGraphMaxObserved = value;
+  if (value < lionGraphMinObserved) lionGraphMinObserved = value;
+
+  // Shift old values left
+  for (int i = 0; i < MAX_GRAPH_POINTS - 1; i++)
+    lionGraphValues[i] = lionGraphValues[i + 1];
+
+  // Add new value
+  lionGraphValues[MAX_GRAPH_POINTS - 1] = value;
+
+  // Clear graph area (only graph, not labels)
+  tft.fillRect(GRAPH_X, GRAPH_Y, GRAPH_W, GRAPH_H, ST7735_BLACK);
+
+  // Redraw graph line
+  for (int i = 1; i < MAX_GRAPH_POINTS; i++)
+  {
+    int x0 = GRAPH_X + i - 1;
+    int x1 = GRAPH_X + i;
+
+    int y0 = GRAPH_Y + GRAPH_H - (int)(((lionGraphValues[i - 1] - minValue) / (maxValue - minValue)) * GRAPH_H);
+    int y1 = GRAPH_Y + GRAPH_H - (int)(((lionGraphValues[i] - minValue) / (maxValue - minValue)) * GRAPH_H);
+
+    y0 = constrain(y0, GRAPH_Y, GRAPH_Y + GRAPH_H);
+    y1 = constrain(y1, GRAPH_Y, GRAPH_Y + GRAPH_H);
+
+    tft.drawLine(x0, y0, x1, y1, ST7735_GREEN);
+  }
+
+  // Redraw graph frame
+  tft.drawRect(GRAPH_X - 1, GRAPH_Y - 1, GRAPH_W + 2, GRAPH_H + 2, ST7735_WHITE);
+
+  // Draw Max value (Observed)
+  tft.fillRect(GRAPH_X + GRAPH_W + 5, GRAPH_Y, 40, 10, ST7735_BLACK); // clear area
+  tft.setCursor(GRAPH_X + GRAPH_W + 5, GRAPH_Y);
+  tft.setTextColor(ST7735_WHITE);
+  tft.setTextSize(1);
+  tft.print("Max:");
+  tft.print(lionGraphMaxObserved, 1);
+
+  // Draw Min value (Observed)
+  tft.fillRect(GRAPH_X + GRAPH_W + 5, GRAPH_Y + GRAPH_H - 10, 40, 10, ST7735_BLACK); // clear area
+  tft.setCursor(GRAPH_X + GRAPH_W + 5, GRAPH_Y + GRAPH_H - 10);
+  tft.setTextColor(ST7735_WHITE);
+  tft.setTextSize(1);
+  tft.print("Min:");
+  tft.print(lionGraphMinObserved, 1);
+
+  // Optional: draw X axis label
+  tft.setCursor(GRAPH_X, GRAPH_Y + GRAPH_H + 5);
+  tft.print("Time -->");
+}
+
+ 
